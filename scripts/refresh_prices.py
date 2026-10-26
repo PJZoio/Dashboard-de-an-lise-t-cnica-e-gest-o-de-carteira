@@ -8,8 +8,11 @@ from engine import CATALOG, _normalise_yahoo
 
 root=Path(__file__).resolve().parents[1]
 out=root/'data';out.mkdir(exist_ok=True)
+custom_file=root/'watchlist.txt'
+custom=[z.strip().upper() for z in custom_file.read_text().splitlines() if z.strip() and not z.strip().startswith('#')] if custom_file.exists() else []
+symbols=list(dict.fromkeys([*CATALOG,*custom,'EURUSD=X']))
 fail=[]; successful=0
-for ticker in CATALOG:
+for ticker in symbols:
     try:
         raw=yf.download(ticker,start='2013-01-01',auto_adjust=True,progress=False,threads=False,timeout=25)
         frame=_normalise_yahoo(raw,ticker)
@@ -28,4 +31,4 @@ if fail:
     print('FALHAS\n'+'\n'.join(fail),file=sys.stderr)
 if successful == 0:
     sys.exit('Nenhum ficheiro atualizado. Teste localmente/Colab ou use uma fonte licenciada.')
-print(f'Atualizados: {successful}/{len(CATALOG)}')
+print(f'Atualizados: {successful}/{len(symbols)}')
