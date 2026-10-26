@@ -44,6 +44,32 @@ def _normalise_yahoo(raw, ticker):
     return candidate.sort_index() if not candidate.empty else None
 
 
+def read_snapshot(folder, tickers, start):
+    """Read locally stored adjusted OHLC. Refuse partial/stale/inconsistent files."""
+    from pathlib import Path
+    base=Path(folder)
+    symbols=list(dict.fromkeys([*tickers,'SPY','QQQ','DIA','RSP','XLE']))
+    out={}; missing=[]
+    for sym in symbols:
+        fp=base / f'{sym}.csv'
+        if not fp.is_file():
+            missing.append(sym)
+            continue
+        try:
+            frame=pd.read_csv(fp,index_col='Date',parse_dates=['Date'])
+            frame=_normalise_yahoo(frame,sym)
+            if frame is None or len(frame)<200:
+                missing.append(sym)
+            else:
+                out[sym]=frame.loc[frame.index>=pd.Timestamp(start)]
+        except Exception as exc:
+            raise ValueError(f'CSV inválido para {sym}: {exc}') from exc
+    essential_missing=[s for s in [*tickers,'SPY'] if s not in out or len(out[s])<200]
+    if essential_missing:
+        raise ValueError('Histórico local insuficiente ou em falta: '+', '.join(essential_missing)+'. Atualize os CSV na pasta data/.')
+    # Auxiliaries can be omitted: ratios do not appear when their inputs are missing.
+    return out
+
 def fetch(tickers, start, end=None):
     """Fetch adjusted OHLC; fail visibly rather than creating misleading signals.
 

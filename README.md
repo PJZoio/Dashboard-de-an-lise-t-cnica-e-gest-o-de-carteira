@@ -37,3 +37,20 @@ Download from the application: summary, historical NAV, order ledger, historical
 ## Colab sem túnel (recomendado)
 
 Abra `ETF_Signals_v2_Colab.ipynb` no Colab, execute a instalação, carregue o ficheiro `etf_sinais_v2.zip` quando solicitado, selecione os ETFs e clique **Analisar**. Produz gráficos e CSV diretamente no Colab. Na versão notebook, a distribuição inicial é equitativa entre os ETFs selecionados; o dashboard Streamlit permite alterar os pesos.
+
+
+## Problemas com cotações no Streamlit Cloud
+
+- Não carregar `__pycache__`: é uma pasta temporária, sem dados financeiros.
+- Consultar os logs da app em **Manage app → Logs** para mensagens `YFRateLimitError`, `429`, `Failed downloads` ou `Unauthorized`.
+- Testar o mesmo pedido no Colab/localmente. Se funcionar aí e falhar na cloud, é provável que o IP da cloud esteja a ser limitado.
+- O código apresenta erro explícito quando o Yahoo falha, sem inventar preços nem apresentar sinais desatualizados.
+- Se persistir, usar uma fonte de dados alternativa com permissão de utilização e preços ajustados comparáveis; uma arquitetura robusta é recolher os dados fora do Streamlit Cloud e publicar um ficheiro atualizado após o fecho.
+
+
+## Fonte de dados resiliente (patch outubro 2026)
+O Streamlit lê por defeito os ficheiros CSV ajustados em `data/`, evitando pedidos Yahoo Finance provenientes dos servidores do Streamlit. Primeiro, execute `python scripts/refresh_prices.py` no computador ou no Colab (diretório do projeto); depois, carregue os CSV gerados em `data/` no GitHub.
+
+Existe uma GitHub Action em `.github/workflows/prices.yml`, acionável em Actions > Atualizar OHLC ETFs > Run workflow e programada de segunda a sexta às 23:20 UTC. Pode também sofrer limites do Yahoo. Confira as mensagens de execução, a data dos ficheiros e o seu conteúdo. A automação não garante atualização. Caso o Yahoo falhe também fora do Streamlit, é necessária uma fonte alternativa de OHLC ajustado ou um fornecedor de dados apropriado.
+
+Não misture OHLC ajustado e não ajustado. A simulação usa preços ajustados, inclusive na abertura; comissões, câmbio e execução efetiva podem diferir.

@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
-from engine import CATALOG,fetch,calc_signal,portfolio
+from engine import CATALOG,fetch,read_snapshot,calc_signal,portfolio
 
 st.set_page_config(page_title='ETF Signals 2.0',layout='wide',page_icon='📈')
 st.title('ETF Signals · Dashboard v2.0')
@@ -13,6 +13,7 @@ st.caption('Modelo experimental | Sinais no fecho; simulação de ordens na aber
 with st.sidebar:
     st.header('Universo e carteira')
     choices=st.multiselect('ETFs a acompanhar',list(CATALOG),default=['DIA','RSP','QQQ'],format_func=lambda t:f'{t} — {CATALOG[t][1]}')
+    source=st.radio('Origem dos preços', ['Histórico do repositório (recomendado)','Yahoo Finance (experimental)'], index=0)
     start=st.date_input('Início da simulação',date(2016,1,1),min_value=date(2005,1,1),max_value=date.today())
     capital=st.number_input('Capital inicial (USD)',100.,10000000.,10000.,step=1000.)
     fee=st.number_input('Comissão por operação (p.b.)',0.,200.,10.,step=1.)
@@ -29,12 +30,21 @@ if not choices:
 if sum(weights.values())>1.00001:
     st.error('A soma dos pesos não pode exceder 100%.');st.stop()
 @st.cache_data(ttl=3600,show_spinner='A obter histórico ajustado...')
-def get_prices(selection,start_date):
-    return fetch(list(selection),str(pd.Timestamp(start_date)-pd.Timedelta(days=900)))
+def get_prices(selection,start_date,source,version):
+    lookback=str(pd.Timestamp(start_date)-pd.Timedelta(days=900))
+    if source.startswith('Histórico'):
+        return read_snapshot('data',list(selection),lookback)
+    return fetch(list(selection),lookback)
 try:
-    data=get_prices(tuple(choices),start)
+    from pathlib import Path
+    version=max((p.stat().st_mtime_ns for p in Path('data').glob('*.csv')),default=0)
+    data=get_prices(tuple(choices),start,source,version)
 except Exception as exc:
     st.error(f'Falha ao descarregar dados: {exc}');st.stop()
+dates={t:d.index.max() for t,d in data.items() if len(d)}
+if dates:
+    newest=max(dates.values()); oldest=min(dates.values())
+    st.caption(f'Fonte: {source} | Última sessão nos ficheiros: {oldest:%Y-%m-%d} a {newest:%Y-%m-%d}. Verifique se os dados estão atualizados antes de operar.')
 missing=[t for t in choices if t not in data]
 if missing:
     st.error('Sem histórico suficiente para: '+', '.join(missing));st.stop()
