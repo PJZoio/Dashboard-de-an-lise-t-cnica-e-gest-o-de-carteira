@@ -69,7 +69,13 @@ st.caption('Sinal do fecho só é aplicável à sessão seguinte. “Posição p
 
 chosen=st.selectbox('ETF para os gráficos',choices,format_func=lambda t:f'{t} · {CATALOG[t][1]}')
 x=signals[chosen].copy(); px=data[chosen][['Open','High','Low','Close']].reindex(x.index)
-view=x.join(px[['Open','High','Low']],how='left').tail(visible)
+view = x.copy()
+
+for col in ['Open', 'High', 'Low']:
+    if col not in view.columns:
+        view[col] = px[col].reindex(view.index)
+
+view = view.tail(visible
 if resample=='Semanais':
     candle=view[['Open','High','Low','Close']].resample('W-FRI').agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
     score=view.score.resample('W-FRI').last().dropna()
