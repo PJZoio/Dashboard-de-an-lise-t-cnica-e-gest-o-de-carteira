@@ -17,20 +17,78 @@ CATALOG = {
     'EWH': ('Ásia', 'Hong Kong'), 'EEM': ('Emergentes', 'Mercados emergentes')
 }
 
+def _normalise_yahoo(raw, ticker):
+    """Handle both flat and MultiIndex Yahoo download output."""
+    if raw is None or raw.empty:
+        return None
+    if isinstance(raw.columns, pd.MultiIndex):
+        for level in range(raw.columns.nlevels):
+            if ticker in raw.columns.get_level_values(level):
+                candidate = raw.xs(ticker, axis=1, level=level).copy()
+                break
+        else:
+            return None
+    else:
+        candidate = raw.copy()
+    required = ['Open', 'High', 'Low', 'Close']
+    if any(col not in candidate.columns for col in required):
+        return None
+    if 'Volume' not in candidate.columns:
+        candidate['Volume'] = 0
+    candidate = candidate[required + ['Volume']]
+    for col in candidate.columns:
+        candidate[col] = pd.to_numeric(candidate[col], errors='coerce')
+    candidate = candidate.dropna(subset=required)
+    candidate = candidate[(candidate[required] > 0).all(axis=1)]
+    candidate.index = pd.to_datetime(candidate.index).tz_localize(None)
+    return candidate.sort_index() if not candidate.empty else None
+
+
 def fetch(tickers, start, end=None):
+    """Fetch adjusted OHLC; fail visibly rather than creating misleading signals.
+
+    If Yahoo blocks Streamlit Cloud IPs (429), this cannot bypass the block.
+    """
     symbols=list(dict.fromkeys([*tickers,'SPY','QQQ','DIA','RSP','XLE']))
-    raw=yf.download(symbols, start=str(start), end=str(end) if end else None,
-                    auto_adjust=True, progress=False, threads=False, group_by='column')
-    if raw.empty: raise ValueError('Sem dados disponíveis: verificar rede, datas ou Yahoo Finance.')
+    kwargs=dict(start=str(start), end=str(end) if end else None,
+                auto_adjust=True, progress=False, threads=False,
+                group_by='column', timeout=20)
+    errors=[]
+    try:
+        raw=yf.download(symbols, **kwargs)
+    except Exception as exc:
+        raw=pd.DataFrame()
+        errors.append(f'Pedido conjunto: {type(exc).__name__}: {exc}')
     out={}
-    for t in symbols:
+    for ticker in symbols:
+        frame=_normalise_yahoo(raw,ticker)
+        if frame is not None and len(frame)>=200:
+            out[ticker]=frame
+    # Targeted retries, not one request per ETF: excessive requests worsen rate limits.
+    essentials=list(dict.fromkeys([*tickers,'SPY']))
+    missing=[t for t in essentials if t not in out]
+    # Retry SPY only for diagnosis; if the entire batch failed, likely a provider/network block.
+    if 'SPY' in missing:
         try:
-            frame=raw.xs(t,axis=1,level=1)[['Open','High','Low','Close','Volume']].copy()
-            frame=frame.dropna(subset=['Open','Close'])
-            frame=frame[(frame[['Open','Close']]>0).all(axis=1)]
-            if len(frame)>=200: out[t]=frame
-        except (KeyError, ValueError): pass
-    if 'SPY' not in out: raise ValueError('SPY indisponível, necessário como benchmark.')
+            frame=_normalise_yahoo(yf.download('SPY',**kwargs),'SPY')
+            if frame is not None and len(frame)>=200:
+                out['SPY']=frame
+        except Exception as exc:
+            errors.append(f'Teste SPY: {type(exc).__name__}: {exc}')
+    if 'SPY' not in out:
+        more=' | '.join(errors) if errors else 'Resposta vazia ou insuficiente.'
+        raise ValueError(
+            'Yahoo Finance não forneceu histórico válido para SPY. '
+            'O Streamlit Cloud pode estar limitado pelo Yahoo (HTTP 429). '
+            'Verifique os logs da aplicação; teste o mesmo pedido no computador/Colab. '
+            f'Detalhe: {more}'
+        )
+    missing_selected=[t for t in tickers if t not in out]
+    if missing_selected:
+        raise ValueError(
+            'Sem pelo menos 200 sessões válidas para: '+', '.join(missing_selected)+'. '
+            'Confirme símbolos, datas e eventuais bloqueios do fornecedor.'
+        )
     return out
 
 def macd(s):
