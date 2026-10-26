@@ -75,7 +75,7 @@ for col in ['Open', 'High', 'Low']:
     if col not in view.columns:
         view[col] = px[col].reindex(view.index)
 
-view = view.tail(visible
+view = view.tail(visible)
 if resample=='Semanais':
     candle=view[['Open','High','Low','Close']].resample('W-FRI').agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
     score=view.score.resample('W-FRI').last().dropna()
