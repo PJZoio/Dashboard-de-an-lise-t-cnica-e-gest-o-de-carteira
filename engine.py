@@ -232,3 +232,81 @@ def portfolio(signals,data,weights,capital=10000,fee_bps=10,slippage_bps=5,start
     sp=data['SPY'].Close.reindex(hist.index)
     hist['bh_spy']=float(capital)*sp/sp.iloc[0]
     return hist,pd.DataFrame(operations),metrics(hist.ret,hist.nav,len(operations)),metrics(hist.bh_spy.pct_change().fillna(0),hist.bh_spy)
+
+
+def read_fx_snapshot(folder,start):
+    """EURUSD=X: USD per 1 EUR; forward fill limited for weekends/non-trading days."""
+    from pathlib import Path
+    fp=Path(folder)/'EURUSD=X.csv'
+    if not fp.exists():
+        raise ValueError('Moeda EUR requer data/EURUSD=X.csv. Execute primeiro GitHub Actions de atualização.')
+    f=pd.read_csv(fp,index_col='Date',parse_dates=['Date'])
+    f=_normalise_yahoo(f,'EURUSD=X')
+    if f is None or len(f)<200:
+        raise ValueError('Histórico EURUSD=X insuficiente ou inválido.')
+    return f.loc[f.index>=pd.Timestamp(start)].copy()
+
+def portfolio_v21(signals,data,weights,capital=10000,fee_bps=10,slippage_bps=5,
+                   start='2016-01-01',strategy='Buy & Hold (referência)',currency='EUR',fx=None):
+    """Fractional shares. All underlying tickers assumed USD-priced.
+
+    EUR capital is converted to USD at first execution day's FX open. Daily
+    portfolio NAV in EUR uses contemporaneous EURUSD close. FX gaps capped.
+    Buy & Hold purchases on the first common-session open.
+    """
+    tickers=list(signals)
+    common=pd.DatetimeIndex(sorted(set.intersection(*(set(data[t].index) for t in tickers),set(data['SPY'].index))))
+    common=common[common>=pd.Timestamp(start)]
+    common=pd.DatetimeIndex([dt for dt in common if all(dt in signals[t].index for t in tickers)])
+    if len(common)<3:raise ValueError('Datas comuns insuficientes.')
+    if sum(weights.values())>1.000001:raise ValueError('Soma dos pesos acima de 100%.')
+    if currency=='EUR':
+        if fx is None:raise ValueError('É necessário histórico EURUSD=X para o modo EUR.')
+        # FX may not trade on US holidays and some US sessions.
+        fxo=fx.Open.reindex(common,method='ffill',limit=5)
+        fxc=fx.Close.reindex(common,method='ffill',limit=5)
+        if fxo.isna().any() or fxc.isna().any():
+            raise ValueError('EURUSD=X não cobre todo o intervalo da simulação.')
+        basefx=float(fxo.iloc[0])
+    else:
+        fxo=pd.Series(1.,index=common);fxc=fxo;basefx=1.
+    cash=float(capital)*basefx;units={t:0. for t in tickers}
+    rows=[];operations=[]; cost_rate=(fee_bps+slippage_bps)/10000
+    for i,dt in enumerate(common):
+        opens={t:float(data[t].loc[dt,'Open']) for t in tickers}
+        closes={t:float(data[t].loc[dt,'Close']) for t in tickers}
+        nav_open=cash+sum(units[t]*opens[t] for t in tickers)
+        prev=common[i-1] if i else None
+        if strategy.startswith('Buy & Hold'):
+            targets={t:1 for t in tickers} if i==0 else {t:int(units[t]>0) for t in tickers}
+        else:
+            targets={t:int(signals[t].loc[prev,'position_target']) for t in tickers} if i else {t:0 for t in tickers}
+        if i>0 and not strategy.startswith('Buy & Hold'):
+            for t in tickers:
+                if targets[t]==0 and units[t]>1e-10:
+                    qty=units[t];gross=qty*opens[t];cost=gross*cost_rate
+                    cash+=gross-cost;units[t]=0.
+                    operations.append({'signal_date':prev.date(),'execution_date':dt.date(),'ticker':t,'side':'VENDA',
+                        'shares':qty,'price_open_USD':opens[t],'gross_USD':gross,'cost_USD':cost,'fx_USD_por_EUR':float(fxo.loc[dt]),
+                        'gross_'+currency:gross/float(fxo.loc[dt]) if currency=='EUR' else gross})
+        for t in tickers:
+            if targets[t]==1 and units[t]<=1e-10 and weights[t]>0:
+                gross=min(nav_open*weights[t],max(cash,0)/(1+cost_rate))
+                if gross>1e-6:
+                    cost=gross*cost_rate;units[t]=gross/opens[t];cash-=gross+cost
+                    operations.append({'signal_date':prev.date() if prev is not None else 'Alocação inicial',
+                        'execution_date':dt.date(),'ticker':t,'side':'COMPRA','shares':units[t],
+                        'price_open_USD':opens[t],'gross_USD':gross,'cost_USD':cost,'fx_USD_por_EUR':float(fxo.loc[dt]),
+                        'gross_'+currency:gross/float(fxo.loc[dt]) if currency=='EUR' else gross})
+        factor=float(fxc.loc[dt])
+        nav_usd=cash+sum(units[t]*closes[t] for t in tickers)
+        row={'date':dt,'nav':nav_usd/factor,'cash':cash/factor,'exposure':1-cash/nav_usd if nav_usd else 0,
+             'fx_USD_por_EUR':factor}
+        for t in tickers:row[f'value_{t}']=units[t]*closes[t]/factor
+        rows.append(row)
+    hist=pd.DataFrame(rows).set_index('date')
+    hist['ret']=hist.nav.pct_change().fillna(0)
+    spy=data['SPY'].Close.reindex(hist.index)
+    # FX-converted SPY buy/hold benchmark, inception priced at first close.
+    hist['bh_spy']=float(capital)*(spy/spy.iloc[0])*(float(fxc.iloc[0])/fxc.values)
+    return hist,pd.DataFrame(operations),metrics(hist.ret,hist.nav,len(operations)),metrics(hist.bh_spy.pct_change().fillna(0),hist.bh_spy)
