@@ -7,8 +7,8 @@ from plotly.subplots import make_subplots
 import streamlit as st
 from engine import CATALOG,fetch,read_snapshot,calc_signal,portfolio
 
-st.set_page_config(page_title='ETF Signals 2.1',layout='wide',page_icon='📈')
-st.title('ETF Signals · Dashboard v2.1')
+st.set_page_config(page_title='ETF Signals 2.2',layout='wide',page_icon='📈')
+st.title('ETF Signals · Dashboard v2.2')
 st.caption('Modelo experimental | Sinais no fecho e ordens na abertura seguinte | USD ou EUR (conversão histórica)')
 with st.sidebar:
     st.header('Universo e carteira')
@@ -176,6 +176,61 @@ for col,label in ratio_cols:
 ratfig.update_layout(height=340,yaxis_title='Índice 100 no início',hovermode='x unified')
 st.plotly_chart(ratfig,use_container_width=True)
 st.caption('Rácios normalizados (base 100). Servem para contextualizar rotação, não fazem parte dos 20% de força relativa da versão atual (ETF/SPY).')
+
+st.divider()
+st.header('Otimização walk-forward · v2.2')
+st.caption('Comparação de três carteiras: Buy & Hold com pesos iguais, mínima volatilidade/paridade de risco e otimização com ajuste moderado pelo score. Apenas dados disponíveis antes de cada operação; ordens na abertura seguinte.')
+from optimization_v22 import backtest
+oc1,oc2,oc3=st.columns(3)
+with oc1:
+    optimizer_method=st.selectbox('Otimização base', ['min_vol','risk_parity'],format_func=lambda q:{'min_vol':'Mínima volatilidade','risk_parity':'Paridade de risco'}[q])
+    optimizer_lookback=st.selectbox('Histórico de calibração (sessões)',[252,504,756],index=1)
+with oc2:
+    optimizer_cap=st.slider('Peso máximo por ETF (%)',10,100,50,5)/100
+    optimizer_frequency=st.radio('Rebalanceamento', ['Mensal','Trimestral'],horizontal=True)
+with oc3:
+    optimizer_tilt=st.slider('Intensidade do score (%)',0,50,25,5)/100
+    optimizer_drift=st.slider('Desvio mínimo para negociar (p.p.)',0,15,3,1)/100
+st.caption('O cabaz pode incluir ETFs dos EUA, Europa e Ásia, cotados em USD. Para outros mercados/moedas é necessário acrescentar conversão cambial por ativo.')
+if st.button('Calcular carteiras otimizadas',type='primary'):
+    if len(choices)<2:
+        st.warning('Selecione pelo menos dois ETFs para a otimização.')
+    elif optimizer_cap*len(choices)<.99999:
+        st.error('O peso máximo selecionado é incompatível com o número de ETFs.')
+    else:
+        try:
+            results={}
+            for key,mode in [('Pesos iguais Buy & Hold','equal_bh'),('Otimizada','optimized'),('Otimizada + score','score_tilt')]:
+                results[key]=backtest(data,signals,choices,capital=capital,currency=currency,fx=fx,start=str(start),
+                    method=optimizer_method,cap=optimizer_cap,lookback=optimizer_lookback,
+                    fee_bps=fee,slip_bps=slip,mode=mode,tilt=optimizer_tilt,
+                    rebalance='M' if optimizer_frequency=='Mensal' else 'Q',min_drift=optimizer_drift)
+            st.session_state['opt22_result']=results
+            st.session_state['opt22_choices']=tuple(choices)
+        except Exception as exc:
+            st.error(f'Otimização não concluída: {exc}')
+if st.session_state.get('opt22_result') and st.session_state.get('opt22_choices')==tuple(choices):
+    results=st.session_state['opt22_result']
+    compar=[];chart=go.Figure()
+    for label,(curve,orders,mets,log) in results.items():
+        compar.append({'Estratégia':label,'CAGR':mets.get('CAGR'), 'MaxDD':mets.get('MaxDD'),
+              'Sharpe':mets.get('Sharpe_0rf'),'Volatilidade':mets.get('Vol_anual'),'Operações':mets.get('Operações')})
+        chart.add_trace(go.Scatter(x=curve.index,y=curve.nav,name=label,mode='lines'))
+    st.dataframe(pd.DataFrame(compar).style.format({'CAGR':'{:.2%}','MaxDD':'{:.2%}','Sharpe':'{:.2f}','Volatilidade':'{:.2%}'}),use_container_width=True,hide_index=True)
+    chart.update_layout(height=390,yaxis_title=f'Valor da carteira ({currency})',hovermode='x unified')
+    st.plotly_chart(chart,use_container_width=True)
+    selected_strategy=st.selectbox('Mostrar pesos e transações',list(results))
+    curve,orders,mets,log=results[selected_strategy]
+    if not log.empty:
+        st.subheader('Histórico de pesos-alvo por rebalanceamento')
+        st.dataframe(log.iloc[::-1].head(24),use_container_width=True,hide_index=True)
+    if not orders.empty:
+        st.subheader('Operações simuladas')
+        st.dataframe(orders.iloc[::-1].head(100),use_container_width=True,hide_index=True)
+    c1,c2=st.columns(2)
+    c1.download_button('Descarregar pesos (CSV)',log.to_csv(index=False).encode('utf-8-sig'),'pesos_otimizados.csv','text/csv')
+    c2.download_button('Descarregar carteira (CSV)',curve.to_csv().encode('utf-8-sig'),'carteira_otimizada.csv','text/csv')
+st.caption('A otimização é histórica, não preditiva. A variante ajustada pelo score apenas altera pesos; não vende automaticamente em score baixo. A referência B&H nesta secção usa pesos iguais. Evitar interpretar a otimização in-sample como indicação de retornos futuros.')
 
 st.subheader('Exportações')
 co1,co2,co3=st.columns(3)

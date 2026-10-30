@@ -14,7 +14,9 @@ CATALOG = {
     'XLU': ('Setor', 'Utilities'), 'FEZ': ('Europa', 'Euro Stoxx 50'),
     'EWG': ('Europa', 'Alemanha'), 'EWU': ('Europa', 'Reino Unido'),
     'EWJ': ('Ásia', 'Japão'), 'FXI': ('Ásia', 'China large cap'),
-    'EWH': ('Ásia', 'Hong Kong'), 'EEM': ('Emergentes', 'Mercados emergentes')
+    'EWH': ('Ásia', 'Hong Kong'), 'EEM': ('Emergentes', 'Mercados emergentes'),
+    'VGK': ('Europa', 'Ações europeias amplas'), 'VPL': ('Ásia', 'Ásia-Pacífico desenvolvido'),
+    'INDA': ('Ásia', 'Índia'), 'EWY': ('Ásia', 'Coreia do Sul')
 }
 
 def _normalise_yahoo(raw, ticker):
