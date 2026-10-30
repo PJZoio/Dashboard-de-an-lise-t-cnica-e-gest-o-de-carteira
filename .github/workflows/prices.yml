@@ -1,4 +1,3 @@
-
 name: Atualizar OHLC ETFs
 
 on:
@@ -38,27 +37,34 @@ jobs:
       - name: Guardar e publicar CSV
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add data/
-          if git diff --cached --quiet; then
-            echo "Sem alterações para publicar."
-            exit 0
-          fi
+          # Preservar os CSV produzidos nesta execução.
+          mkdir -p "$RUNNER_TEMP/etf_prices"
+          cp data/*.csv "$RUNNER_TEMP/etf_prices/"
 
-          git commit -m "Atualizar cotações OHLC"
-
+          # Atualizar a cópia de trabalho antes de cada tentativa de publicação.
           for attempt in 1 2 3 4 5; do
             echo "Tentativa de publicação: $attempt"
-
             git fetch origin main
-            git rebase origin/main
+            git reset --hard origin/main
+
+            mkdir -p data
+            cp "$RUNNER_TEMP/etf_prices/"*.csv data/
+            git add data/
+
+            if git diff --cached --quiet; then
+              echo "Sem alterações: históricos já atualizados."
+              exit 0
+            fi
+
+            git commit -m "Atualizar cotações OHLC"
 
             if git push origin HEAD:main; then
-              echo "Cotações publicadas com sucesso."
+              echo "Atualização concluída com sucesso."
               exit 0
             fi
 
