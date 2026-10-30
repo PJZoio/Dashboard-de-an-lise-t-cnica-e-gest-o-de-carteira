@@ -1,35 +1,69 @@
+
 name: Atualizar OHLC ETFs
+
 on:
   workflow_dispatch:
   schedule:
-    - cron: '20 23 * * 1-5' # UTC; consultar após fecho EUA. Pode atrasar.
+    - cron: '20 23 * * 1-5'
+
 permissions:
   contents: write
-jobs:
-  prices:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - run: pip install -r requirements.txt
-      - run: python scripts/refresh_prices.py
-      - name: Commit apenas novos CSV
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add data/*.csv        
-      - name: Guardar históricos atualizados
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/
-          git diff --cached --quiet && exit 0
-          git commit -m "Atualizar cotações OHLC"
-          git pull --rebase origin main
-          git push origin HEAD:main
 
 concurrency:
   group: atualizar-precos
   cancel-in-progress: false
+
+jobs:
+  prices:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Atualizar cotações
+        run: python scripts/refresh_prices.py
+
+      - name: Guardar e publicar CSV
+        shell: bash
+        run: |
+          set -e
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add data/
+          if git diff --cached --quiet; then
+            echo "Sem alterações para publicar."
+            exit 0
+          fi
+
+          git commit -m "Atualizar cotações OHLC"
+
+          for attempt in 1 2 3 4 5; do
+            echo "Tentativa de publicação: $attempt"
+
+            git fetch origin main
+            git rebase origin/main
+
+            if git push origin HEAD:main; then
+              echo "Cotações publicadas com sucesso."
+              exit 0
+            fi
+
+            sleep 5
+          done
+
+          echo "Falha ao publicar após 5 tentativas."
+          exit 1
