@@ -1,3 +1,0 @@
-# Tickers personalizados (um por linha, ativos cotados em USD)
-VOO
-SCHD
