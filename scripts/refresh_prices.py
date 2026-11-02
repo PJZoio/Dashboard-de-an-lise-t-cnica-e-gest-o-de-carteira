@@ -4,13 +4,13 @@ from pathlib import Path
 import pandas as pd
 import yfinance as yf
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from engine import CATALOG, _normalise_yahoo
+from core.data import CATALOG, FX_TICKER, _normalise_yahoo
 
 root=Path(__file__).resolve().parents[1]
 out=root/'data';out.mkdir(exist_ok=True)
 custom_file=root/'watchlist.txt'
 custom=[z.strip().upper() for z in custom_file.read_text().splitlines() if z.strip() and not z.strip().startswith('#')] if custom_file.exists() else []
-symbols=list(dict.fromkeys([*CATALOG,*custom,'EURUSD=X']))
+symbols=list(dict.fromkeys([*CATALOG,*custom,FX_TICKER]))
 fail=[]; successful=0
 for ticker in symbols:
     try:
