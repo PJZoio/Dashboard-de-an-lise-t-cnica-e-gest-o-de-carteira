@@ -15,9 +15,10 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from core import backtest as bt
-from core.data import (CATALOG, FX_TICKER, GROUP_ORDER, build_panel, describe, last_dates,
-                       load_folder, read_watchlist, to_currency_close)
-from core.signals import quadrant, rotation_table, rrg, technical_score
+from core.data import (CATALOG, FX_TICKER, GROUP_ORDER, build_panel, convert, describe, last_dates,
+                       load_folder, native_currency, read_watchlist, to_currency_close)
+from core.signals import (equity_stats, quadrant, rotation_table, rrg, signal_equity, signal_trades,
+                          technical_score)
 from core.strategies import STRATEGIES, Ctx
 
 st.set_page_config(page_title='ETF Rotação & Otimização', layout='wide', page_icon='📈')
@@ -40,9 +41,11 @@ def data_version() -> int:
 
 @st.cache_data(show_spinner=False)
 def get_signals(version: int, tickers: tuple[str, ...], bench: str) -> dict[str, pd.DataFrame]:
+    """Score calculado na moeda nativa de cada ETF; o benchmark é convertido para essa moeda."""
     data = get_data(version)
     b = data[bench]['Close']
-    return {t: technical_score(data[t], b) for t in tickers}
+    bn = native_currency(bench)
+    return {t: technical_score(data[t], convert(b, data, bn, native_currency(t))) for t in tickers}
 
 
 @st.cache_data(show_spinner='A simular estratégias (walk-forward)…')
@@ -456,26 +459,105 @@ with tab_tec:
     st.dataframe(pd.DataFrame(rows).sort_values('Score', ascending=False), hide_index=True, width='stretch',
                  column_config={'Score': st.column_config.ProgressColumn(min_value=0, max_value=100, format='%.0f')})
     st.caption('Score v2: 40% tendência semanal, 30% momentum diário, 20% força relativa vs SPY, 10% risco. '
-               'Entrada ≥ 70 com filtro; saída < 40 ou filtro falso. Calculado em USD. '
+               'Entrada ≥ 70 com filtro; saída < 40 ou filtro falso. Calculado na moeda de cotação de cada ETF. '
                'No backtest, o “Filtro técnico” só é avaliado nas datas de rebalanceamento.')
-    c1, c2 = st.columns([1, 3])
-    chosen = c1.selectbox('ETF', basket, format_func=label)
-    nview = c2.select_slider('Período', [126, 252, 504, 1008], 252, format_func=lambda n: f'{n // 252 or 0.5} ano(s)' if n >= 252 else '6 meses')
-    v = sig[chosen].tail(nview)
+    st.divider()
+    st.subheader('Sinais de compra e venda num ETF')
+    tec_opts = basket + [t for t in ordered if t not in basket]
+    c1, c2 = st.columns([1.3, 2])
+    chosen = c1.selectbox('ETF (qualquer ETF com histórico, não só o cabaz)', tec_opts, format_func=label,
+                          index=tec_opts.index('IWDA.AS') if 'IWDA.AS' in tec_opts else 0)
+    nview = c2.select_slider('Período', [126, 252, 504, 1008, 2520, 0], 504,
+                             format_func=lambda n: 'Tudo' if n == 0 else ('6 meses' if n < 252 else f'{n // 252} ano(s)'))
+    ccy = native_currency(chosen)
+    full = get_signals(version, (chosen,), 'SPY' if 'SPY' in data else chosen)[chosen]
+    v = full if nview == 0 else full.tail(nview)
+    trades = signal_trades(full)
+    tv = trades[trades['sinal'] >= v.index[0]] if len(trades) else trades
+    z = full.iloc[-1]
+
+    # estado atual em linguagem simples
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric('Score atual', f'{z.score:.0f} / 100', help='Entrada ≥ 70 com filtro; saída < 40 ou filtro falso.')
+    s2.metric('Filtro', 'Favorável' if z.gate else 'Desfavorável',
+              help='Preço > MM200, SPY > MM200 e tendência semanal ≥ 50.')
+    s3.metric('Posição da regra', 'Comprado' if z.position else 'Fora')
+    last_sig = trades.iloc[-1] if len(trades) else None
+    s4.metric(f"Último sinal: {last_sig['tipo']}" if last_sig is not None else 'Último sinal',
+              f"{last_sig['sinal']:%d/%m/%Y}" if last_sig is not None else '—')
+    if not z.position:
+        falta = []
+        if z.score < 70:
+            falta.append(f'score subir {70 - z.score:.0f} pontos (até 70)')
+        if not z.gate:
+            falta.append('filtro ficar favorável')
+        st.caption('Para gerar COMPRA falta: ' + ' e '.join(falta) + '.' if falta else
+                   'Condições de compra cumpridas no último fecho: ordem na próxima abertura.')
+    else:
+        st.caption(f'Sai quando o score cair abaixo de 40 (atual {z.score:.0f}) ou o filtro ficar desfavorável.')
+
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[.7, .3], vertical_spacing=.05)
-    fig.add_candlestick(x=v.index, open=v.Open, high=v.High, low=v.Low, close=v.Close, name='OHLC (USD)', row=1, col=1)
+    fig.add_candlestick(x=v.index, open=v.Open, high=v.High, low=v.Low, close=v.Close,
+                        name=f'OHLC ({ccy})', row=1, col=1)
     for c, n, col in [('sma50', 'MM50', '#2563EB'), ('sma200', 'MM200', '#DC2626')]:
         fig.add_scatter(x=v.index, y=v[c], name=n, line=dict(width=1.3, color=col), row=1, col=1)
-    on = v.position.astype(bool)
+    # períodos comprado sombreados
+    pos = v.position.astype(int)
+    edges = pos.diff().fillna(pos.iloc[0])
+    starts = list(v.index[edges.to_numpy() > 0])
+    ends = list(v.index[edges.to_numpy() < 0])
+    if pos.iloc[0] == 1 and (not starts or starts[0] != v.index[0]):
+        starts = [v.index[0]] + starts
+    if len(ends) < len(starts):
+        ends.append(v.index[-1])
+    for x0, x1 in zip(starts, ends):
+        fig.add_vrect(x0=x0, x1=x1, fillcolor='rgba(5,150,105,.08)', line_width=0, layer='below', row=1, col=1)
+    ex = tv.dropna(subset=['execução']) if len(tv) else tv
+    for side, sym, col in [('COMPRA', 'triangle-up', '#059669'), ('VENDA', 'triangle-down', '#DC2626')]:
+        sub = ex[ex['tipo'] == side] if len(ex) else ex
+        if len(sub):
+            y = sub['preço execução'] * (0.97 if side == 'COMPRA' else 1.03)
+            fig.add_scatter(x=sub['execução'], y=y, mode='markers', name=side,
+                            marker=dict(symbol=sym, size=13, color=col, line=dict(width=1, color='white')),
+                            customdata=np.c_[sub['preço execução'], sub['score']],
+                            hovertemplate=side + f' na abertura: %{{customdata[0]:.2f}} {ccy}<br>'
+                                          'score no sinal: %{customdata[1]:.0f}<extra></extra>', row=1, col=1)
     fig.add_scatter(x=v.index, y=v.score, name='Score', line=dict(color='#7C3AED', width=1.8), row=2, col=1)
-    fig.add_scatter(x=v.index[on], y=v.score[on], mode='markers', marker=dict(size=3, color='#059669'),
-                    name='Posição = comprado', row=2, col=1)
     for th, col in [(70, '#059669'), (40, '#DC2626')]:
         fig.add_hline(y=th, line_dash='dash', line_color=col, opacity=.6, row=2, col=1)
     fig.update_yaxes(range=[0, 100], row=2, col=1)
-    fig.update_layout(height=600, xaxis_rangeslider_visible=False, hovermode='x unified',
+    fig.update_yaxes(title=ccy, row=1, col=1)
+    fig.update_layout(height=640, xaxis_rangeslider_visible=False, hovermode='x unified',
                       legend=dict(orientation='h', y=1.05), margin=dict(t=30, b=10))
     st.plotly_chart(fig, width='stretch')
+    st.caption('▲ compra / ▼ venda desenhados na abertura da sessão seguinte ao sinal (preço a que a ordem seria '
+               'executada). Faixa verde = regra comprada. Preços ajustados na moeda de cotação do ETF.')
+
+    # a regra valeu a pena neste ETF?
+    eq = signal_equity(v, cost)
+    stt = equity_stats(eq, len(tv))
+    e1, e2, e3, e4 = st.columns(4)
+    e1.metric('CAGR regra vs B&H', f"{stt['Regra 70/40']['CAGR']:.1%}",
+              f"{stt['Regra 70/40']['CAGR'] - stt['Buy & Hold']['CAGR']:+.1%} vs {stt['Buy & Hold']['CAGR']:.1%}")
+    e2.metric('Máx. drawdown regra vs B&H', f"{stt['Regra 70/40']['Máx. drawdown']:.1%}",
+              f"{stt['Regra 70/40']['Máx. drawdown'] - stt['Buy & Hold']['Máx. drawdown']:+.1%} vs "
+              f"{stt['Buy & Hold']['Máx. drawdown']:.1%}")
+    e3.metric('Tempo investido', f"{stt['tempo_investido']:.0%}")
+    e4.metric('Sinais no período', f"{stt['transacoes']}")
+    efig = go.Figure()
+    efig.add_scatter(x=eq.index, y=eq['Buy & Hold'] * 100, name='Buy & Hold', line=dict(color=COLORS['bh'], width=2))
+    efig.add_scatter(x=eq.index, y=eq['Regra 70/40'] * 100, name='Regra 70/40', line=dict(color=COLORS['tech'], width=2))
+    efig.update_layout(height=280, yaxis_title='Base 100', hovermode='x unified', margin=dict(t=10, b=10),
+                       legend=dict(orientation='h', y=1.12))
+    st.plotly_chart(efig, width='stretch')
+    st.caption(f'Período visível, custos {cost:.0f} p.b. por transação, liquidez a 0% quando fora. '
+               'Parâmetros 70/40 fixos e escolhidos a posteriori: resultado dentro da amostra, não uma previsão.')
+    with st.expander('Lista de sinais'):
+        st.dataframe(tv.iloc[::-1] if len(tv) else tv, hide_index=True, width='stretch',
+                     column_config={'preço execução': st.column_config.NumberColumn(f'Preço execução ({ccy})', format='%.2f'),
+                                    'score': st.column_config.NumberColumn(format='%.0f'),
+                                    'sinal': st.column_config.DateColumn(format='DD/MM/YYYY'),
+                                    'execução': st.column_config.DateColumn(format='DD/MM/YYYY')})
 
 # ===================================================================== METODOLOGIA
 with tab_met:

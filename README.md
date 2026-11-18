@@ -25,7 +25,7 @@ streamlit run app.py
 Decisão com o fecho de D-1 → execução na abertura de D → avaliação ao fecho. Custos sobre o valor negociado; banda de tolerância evita micro-negociação.
 
 ## Novos ETF no catálogo
-URTH (proxy IWDA), ACWI, setores XLK/XLC/XLY/XLB/XLRE, MTUM, USMV e defensivos SHY/IEF/TLT/AGG/GLD.
+IWDA.AS (UCITS, EUR), URTH (proxy IWDA), ACWI, setores XLK/XLC/XLY/XLB/XLRE, MTUM, USMV e defensivos SHY/IEF/TLT/AGG/GLD.
 Só aparecem depois de correr o workflow **Actions → Atualizar OHLC ETFs → Run workflow**.
 
 Investigação, não aconselhamento financeiro.

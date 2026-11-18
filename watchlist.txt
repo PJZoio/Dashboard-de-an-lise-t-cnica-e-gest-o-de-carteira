@@ -1,3 +1,6 @@
-# Tickers personalizados (um por linha, ativos cotados em USD)
+# Tickers adicionais (um por linha). Sem sufixo = cotado em USD.
+# Sufixos de bolsas em EUR (.AS .DE .PA .MI ...) são tratados como EUR.
+# Bolsa de Londres (.L) não é suportada automaticamente (USD/GBP/GBp).
 VOO
 SCHD
+IWDA.AS
