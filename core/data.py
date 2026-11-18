@@ -15,7 +15,8 @@ import pandas as pd
 # ticker: (grupo, descrição). Grupos usados nas vistas de rotação.
 CATALOG: dict[str, tuple[str, str]] = {
     # Global / benchmark
-    'URTH': ('Global', 'MSCI World (proxy IWDA)'),
+    'IWDA.AS': ('Global', 'iShares Core MSCI World UCITS Acc (EUR · Amesterdão)'),
+    'URTH': ('Global', 'MSCI World (proxy IWDA, EUA)'),
     'ACWI': ('Global', 'MSCI ACWI'),
     # Regiões
     'SPY': ('Região', 'EUA · S&P 500'),
@@ -61,6 +62,23 @@ CATALOG: dict[str, tuple[str, str]] = {
     'GLD': ('Defensivo', 'Ouro'),
 }
 FX_TICKER = 'EURUSD=X'
+# Moeda de cotação por sufixo Yahoo. Sem sufixo = USD. Bolsa de Londres (.L) não é
+# tratada automaticamente: mistura linhas em USD, GBP e GBp (pence).
+EUR_SUFFIXES = ('.AS', '.DE', '.PA', '.MI', '.F', '.BR', '.LS', '.MC', '.VI', '.HE')
+
+
+def native_currency(ticker: str) -> str:
+    return 'EUR' if ticker.upper().endswith(EUR_SUFFIXES) else 'USD'
+
+
+def convert(s: pd.Series, data: dict, frm: str, to: str, kind: str = 'Close') -> pd.Series:
+    """Converte uma série de preços entre USD e EUR (EURUSD = USD por 1 EUR)."""
+    if frm == to:
+        return s
+    if FX_TICKER not in data:
+        raise ValueError('Conversão USD/EUR requer data/EURUSD=X.csv.')
+    fx = data[FX_TICKER][kind].reindex(s.index, method='ffill', limit=5)
+    return (s / fx if to == 'EUR' else s * fx).dropna()
 GROUP_ORDER = ['Global', 'Região', 'Setor', 'Estilo', 'Defensivo', 'Personalizado']
 
 
@@ -132,7 +150,8 @@ class Panel:
 def build_panel(data: dict[str, pd.DataFrame], tickers: list[str], currency: str = 'EUR') -> Panel:
     """Calendário = interseção das sessões; sem forward-fill de preços de ativos.
 
-    EUR: preço_EUR = preço_USD / EURUSD (USD por 1 EUR); abertura com a taxa de
+    Cada ticker é convertido da sua moeda nativa (ver native_currency) para a
+    moeda da carteira. preço_EUR = preço_USD / EURUSD (USD por 1 EUR); abertura com a taxa de
     abertura e fecho com a taxa de fecho. O câmbio é preenchido no máximo 5 dias
     (feriados cambiais vs. bolsa dos EUA).
     """
@@ -144,15 +163,23 @@ def build_panel(data: dict[str, pd.DataFrame], tickers: list[str], currency: str
     valid = opens.notna().all(axis=1) & closes.notna().all(axis=1)
     n_before = len(opens)
     opens, closes = opens[valid], closes[valid]
-    if currency == 'EUR':
+    need_fx = any(native_currency(t) != currency for t in tickers)
+    if need_fx:
         if FX_TICKER not in data:
-            raise ValueError('Modo EUR requer data/EURUSD=X.csv.')
+            raise ValueError('Conversão cambial requer data/EURUSD=X.csv.')
         fx = data[FX_TICKER]
         fxo = fx['Open'].reindex(opens.index, method='ffill', limit=5)
         fxc = fx['Close'].reindex(closes.index, method='ffill', limit=5)
         ok = fxo.notna() & fxc.notna()
-        opens = opens[ok].div(fxo[ok], axis=0)
-        closes = closes[ok].div(fxc[ok], axis=0)
+        opens, closes, fxo, fxc = opens[ok], closes[ok], fxo[ok], fxc[ok]
+        for t in tickers:
+            nc = native_currency(t)
+            if nc == currency:
+                continue
+            if currency == 'EUR':      # USD -> EUR
+                opens[t], closes[t] = opens[t] / fxo, closes[t] / fxc
+            else:                      # EUR -> USD
+                opens[t], closes[t] = opens[t] * fxo, closes[t] * fxc
     dropped = n_before - len(opens)
     return Panel(opens.astype(float), closes.astype(float), currency, int(dropped))
 
@@ -167,8 +194,4 @@ def last_dates(data: dict[str, pd.DataFrame], tickers: list[str]) -> tuple[pd.Ti
 
 
 def to_currency_close(data: dict[str, pd.DataFrame], ticker: str, currency: str) -> pd.Series:
-    s = data[ticker]['Close']
-    if currency == 'EUR' and FX_TICKER in data:
-        fx = data[FX_TICKER]['Close'].reindex(s.index, method='ffill', limit=5)
-        s = (s / fx).dropna()
-    return s
+    return convert(data[ticker]['Close'], data, native_currency(ticker), currency)

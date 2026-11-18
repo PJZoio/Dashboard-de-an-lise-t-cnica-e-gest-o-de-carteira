@@ -117,3 +117,59 @@ def quadrant(ratio: float, momentum: float) -> str:
     if momentum >= 100:
         return 'Melhoria'
     return 'Atraso'
+
+
+def signal_trades(f: pd.DataFrame) -> pd.DataFrame:
+    """Entradas/saídas da regra 70/40: sinal no fecho de D, execução na abertura de D+1."""
+    pos = f['position']
+    chg = pos.diff().fillna(pos.iloc[0])
+    rows = []
+    idx = f.index
+    for i in np.nonzero(chg.to_numpy() != 0)[0]:
+        if i + 1 >= len(idx):          # sinal no último fecho: executa na próxima sessão
+            exec_date, price = pd.NaT, np.nan
+        else:
+            exec_date, price = idx[i + 1], float(f['Open'].iloc[i + 1])
+        rows.append({'sinal': idx[i], 'execução': exec_date,
+                     'tipo': 'COMPRA' if chg.iloc[i] > 0 else 'VENDA',
+                     'preço execução': price, 'score': float(f['score'].iloc[i]),
+                     'motivo': ('score ≥ 70 e filtro favorável' if chg.iloc[i] > 0 else
+                                ('filtro desfavorável' if not bool(f['gate'].iloc[i]) else 'score < 40'))})
+    return pd.DataFrame(rows)
+
+
+def signal_equity(f: pd.DataFrame, cost_bps: float = 15.0) -> pd.DataFrame:
+    """Curva da regra (comprado/liquidez a 0%) vs Buy & Hold do mesmo ETF.
+
+    Execução exata na abertura seguinte: no dia de entrada ganha-se abertura→fecho,
+    no dia de saída fecho anterior→abertura. Custo aplicado em cada transação.
+    """
+    O, C = f['Open'].to_numpy(), f['Close'].to_numpy()
+    p = f['position'].to_numpy()
+    c = cost_bps / 1e4
+    r = np.zeros(len(f))
+    for d in range(1, len(f)):
+        held_prev = p[d - 2] if d >= 2 else 0
+        sig = p[d - 1]
+        if sig and held_prev:
+            r[d] = C[d] / C[d - 1] - 1
+        elif sig and not held_prev:
+            r[d] = (C[d] / O[d]) * (1 - c) - 1
+        elif not sig and held_prev:
+            r[d] = (O[d] / C[d - 1]) * (1 - c) - 1
+    out = pd.DataFrame({'Regra 70/40': np.cumprod(1 + r),
+                        'Buy & Hold': C / C[0]}, index=f.index)
+    out['exposto'] = np.r_[0, p[:-1]]
+    return out
+
+
+def equity_stats(eq: pd.DataFrame, n_trades: int) -> dict:
+    yrs = (eq.index[-1] - eq.index[0]).days / 365.25
+    res = {}
+    for col in ['Regra 70/40', 'Buy & Hold']:
+        s = eq[col] / eq[col].iloc[0]
+        res[col] = {'CAGR': s.iloc[-1] ** (1 / yrs) - 1 if yrs > 0 else np.nan,
+                    'Máx. drawdown': (s / s.cummax() - 1).min()}
+    res['tempo_investido'] = float(eq['exposto'].mean())
+    res['transacoes'] = n_trades
+    return res
