@@ -81,7 +81,7 @@ def rotation_table(closes: pd.DataFrame, bench: str) -> pd.DataFrame:
     t['> MM200'] = last > sma200
     t['Dist. MM200'] = last / sma200 - 1
     t['Vol 3M'] = closes.pct_change().iloc[-63:].std() * np.sqrt(252)
-    t['Ranking'] = t['Momentum'].rank(ascending=False).astype('Int64')
+    t['Ranking'] = t['Momentum'].rank(ascending=False, method='min').astype('Int64')
     return t.sort_values('Momentum', ascending=False)
 
 

@@ -15,7 +15,6 @@ import pandas as pd
 # ticker: (grupo, descrição). Grupos usados nas vistas de rotação.
 CATALOG: dict[str, tuple[str, str]] = {
     # Global / benchmark
-    'IWDA.AS': ('Global', 'iShares Core MSCI World UCITS Acc (EUR · Amesterdão)'),
     'URTH': ('Global', 'MSCI World (proxy IWDA, EUA)'),
     'ACWI': ('Global', 'MSCI ACWI'),
     # Regiões
@@ -31,6 +30,7 @@ CATALOG: dict[str, tuple[str, str]] = {
     'INDA': ('Região', 'Índia'),
     'EWY': ('Região', 'Coreia do Sul'),
     'EEM': ('Região', 'Mercados emergentes'),
+    'AAXJ': ('Região', 'Ásia ex-Japão (AC)'),
     # Setores EUA (SPDR)
     'XLK': ('Setor', 'Tecnologia'),
     'XLC': ('Setor', 'Comunicações'),
@@ -54,13 +54,21 @@ CATALOG: dict[str, tuple[str, str]] = {
     'MTUM': ('Estilo', 'Momentum'),
     'USMV': ('Estilo', 'Mínima volatilidade'),
     'VOO': ('Estilo', 'S&P 500 (Vanguard)'),
+    # Temáticos (proxies da carteira UCITS)
+    'IGF': ('Temático', 'Infraestruturas globais'),
+    'ICLN': ('Temático', 'Energias limpas globais'),
     # Defensivos
     'SHY': ('Defensivo', 'Obrigações EUA 1-3 anos'),
     'IEF': ('Defensivo', 'Obrigações EUA 7-10 anos'),
     'TLT': ('Defensivo', 'Obrigações EUA 20+ anos'),
     'AGG': ('Defensivo', 'Obrigações agregadas EUA'),
     'GLD': ('Defensivo', 'Ouro'),
+    'HYG': ('Defensivo', 'High yield EUA'),
 }
+# Carteira UCITS (listagens em EUR) — ver core/ucits.py
+from .ucits import UCITS as _UCITS  # noqa: E402
+for _u in _UCITS:
+    CATALOG[_u.id] = ('UCITS', f'{_u.name} ({_u.policy}) · {_u.sheet}')
 FX_TICKER = 'EURUSD=X'
 # Moeda de cotação por sufixo Yahoo. Sem sufixo = USD. Bolsa de Londres (.L) não é
 # tratada automaticamente: mistura linhas em USD, GBP e GBp (pence).
@@ -79,7 +87,7 @@ def convert(s: pd.Series, data: dict, frm: str, to: str, kind: str = 'Close') ->
         raise ValueError('Conversão USD/EUR requer data/EURUSD=X.csv.')
     fx = data[FX_TICKER][kind].reindex(s.index, method='ffill', limit=5)
     return (s / fx if to == 'EUR' else s * fx).dropna()
-GROUP_ORDER = ['Global', 'Região', 'Setor', 'Estilo', 'Defensivo', 'Personalizado']
+GROUP_ORDER = ['UCITS', 'Global', 'Região', 'Setor', 'Estilo', 'Temático', 'Defensivo', 'Personalizado']
 
 
 def describe(ticker: str) -> tuple[str, str]:
@@ -124,6 +132,8 @@ def load_folder(folder: str | Path = 'data', min_rows: int = 260) -> dict[str, p
     """Lê todos os CSV disponíveis. Ficheiros curtos ou inválidos são ignorados."""
     out: dict[str, pd.DataFrame] = {}
     for fp in sorted(Path(folder).glob('*.csv')):
+        if fp.name.startswith('_'):
+            continue
         sym = fp.stem
         try:
             frame = _normalise_yahoo(pd.read_csv(fp, index_col='Date', parse_dates=['Date']), sym)
@@ -161,8 +171,8 @@ def build_panel(data: dict[str, pd.DataFrame], tickers: list[str], currency: str
     opens = pd.concat({t: data[t]['Open'] for t in tickers}, axis=1)
     closes = pd.concat({t: data[t]['Close'] for t in tickers}, axis=1)
     valid = opens.notna().all(axis=1) & closes.notna().all(axis=1)
-    n_before = len(opens)
     opens, closes = opens[valid], closes[valid]
+    n_before = len(opens)          # conta só sessões perdidas por falta de câmbio
     need_fx = any(native_currency(t) != currency for t in tickers)
     if need_fx:
         if FX_TICKER not in data:
