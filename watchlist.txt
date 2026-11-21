@@ -3,4 +3,4 @@
 # Bolsa de Londres (.L) não é suportada automaticamente (USD/GBP/GBp).
 VOO
 SCHD
-IWDA.AS
+

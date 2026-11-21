@@ -20,6 +20,7 @@ from core.data import (CATALOG, FX_TICKER, GROUP_ORDER, build_panel, convert, de
 from core.signals import (equity_stats, quadrant, rotation_table, rrg, signal_equity, signal_trades,
                           technical_score)
 from core.strategies import STRATEGIES, Ctx
+from core.ucits import BY_ID as UCITS_BY_ID, SHEET_WEIGHTS, UCITS, UCITS_DEFENSIVE
 
 st.set_page_config(page_title='ETF Rotação & Otimização', layout='wide', page_icon='📈')
 
@@ -117,23 +118,43 @@ with st.sidebar:
     st.header('Cabaz')
     ordered = sorted(available, key=lambda t: (GROUP_ORDER.index(describe(t)[0])
                                                if describe(t)[0] in GROUP_ORDER else 99, t))
-    basket = st.multiselect('ETFs', ordered, default=[t for t in DEFAULT_BASKET if t in available],
-                            format_func=label)
+    preset = st.radio('Ponto de partida', ['Carteira UCITS (folha)', 'Proxies EUA'], horizontal=True,
+                      index=0 if any(t in available for t in SHEET_WEIGHTS) else 1,
+                      help='UCITS: os ETF da tua folha, cotados em EUR, com os pesos da coluna H. '
+                           'Proxies EUA: ETF americanos com histórico longo (melhor para backtest).')
+    if preset.startswith('Carteira'):
+        preset_default = [t for t in SHEET_WEIGHTS if t in available]
+        miss_u = [t for t in SHEET_WEIGHTS if t not in available]
+        if miss_u:
+            st.caption('Sem dados ainda (correr o workflow): ' + ', '.join(miss_u))
+        if not preset_default:
+            st.warning('Ainda não há CSV da carteira UCITS. Corra o workflow “Atualizar OHLC ETFs”; '
+                       'entretanto use “Proxies EUA”.')
+    else:
+        preset_default = [t for t in DEFAULT_BASKET if t in available]
+    basket = st.multiselect('ETFs', ordered, default=preset_default, format_func=label, key=f'basket_{preset}')
     c1, c2 = st.columns(2)
     currency = c1.radio('Moeda', ['EUR', 'USD'], horizontal=True)
     capital = c2.number_input(f'Capital ({currency})', 1_000.0, 1e8, 10_000.0, step=1_000.0)
     start = st.date_input('Início do backtest', date(2016, 1, 1), min_value=date(2010, 1, 1),
                           max_value=date.today())
-    bench_opts = [t for t in ['URTH', 'ACWI', 'SPY'] if t in available] or available
+    bench_opts = [t for t in ['IWDA.AS', 'URTH', 'ACWI', 'SPY'] if t in available] or available
     bench = st.selectbox('Benchmark', bench_opts, format_func=label,
-                         help='URTH ≈ MSCI World (proxy do IWDA). Fica disponível após o workflow descarregar o CSV.')
+                         help='IWDA.AS = o teu benchmark (MSCI World, EUR). URTH é o proxy americano.')
 
     with st.expander('Carteira atual / referência', expanded=False):
         st.caption('Pesos do Buy & Hold e ponto de partida para as ordens no separador Decisão. '
                    'São normalizados para 100%.')
         if basket:
-            key = 'w_' + '_'.join(basket)
-            base = pd.DataFrame({'ETF': basket, 'Peso %': [round(100 / len(basket), 2)] * len(basket)})
+            use_sheet = preset.startswith('Carteira') and any(t in SHEET_WEIGHTS for t in basket)
+            init = [round(100 * SHEET_WEIGHTS.get(t, 0.0), 2) if use_sheet else round(100 / len(basket), 2)
+                    for t in basket]
+            if sum(init) <= 0:
+                init = [round(100 / len(basket), 2)] * len(basket)
+            key = f'w_{preset}_' + '_'.join(basket)
+            base = pd.DataFrame({'ETF': basket, 'Peso %': init})
+            if use_sheet:
+                st.caption('Pesos iniciais = coluna H da folha (ETF sem peso na folha ficam a 0%).')
             ed = st.data_editor(base, key=key, hide_index=True, disabled=['ETF'],
                                 column_config={'Peso %': st.column_config.NumberColumn(min_value=0.0, max_value=100.0, step=1.0)})
             raw = ed.set_index('ETF')['Peso %'].clip(lower=0)
@@ -158,7 +179,8 @@ with st.sidebar:
                                  help='Só entra um ETF com momentum positivo; o resto vai para o defensivo/liquidez.')
         def_opts = ['(liquidez)'] + basket
         dsel = st.selectbox('Ativo defensivo', def_opts,
-                            index=next((i for i, t in enumerate(def_opts) if t in ('IEF', 'SHY', 'AGG', 'GLD', 'TLT')), 0),
+                            index=next((def_opts.index(t) for t in (UCITS_DEFENSIVE, 'IEF', 'SHY', 'AGG', 'GOLD.PA', 'GLD', 'TLT')
+                                        if t in def_opts), 0),
                             help='Recebe as vagas não preenchidas na rotação e no filtro técnico.')
         defensive = None if dsel == '(liquidez)' else dsel
         cash_rate = st.number_input('Remuneração da liquidez (%/ano)', 0.0, 10.0, 0.0, 0.25) / 100
@@ -187,9 +209,10 @@ st.caption(f'Dados até {oldest:%d/%m/%Y}'
            + f' · backtest desde {real_start:%d/%m/%Y} · valores em {currency} · '
            + f'custos {cost:.0f} p.b. · rebalanceamento {"mensal" if freq == "M" else "trimestral"}')
 if clamped:
+    late = sorted(basket, key=lambda t: data[t].index[0], reverse=True)[:3]
     st.warning(f'O início foi adiado para {real_start:%d/%m/%Y}: são precisas ≥ {max(260, lookback + 1)} '
-               'sessões comuns antes da primeira decisão (aquecimento). ETF com histórico curto '
-               '(ex. XLC, desde 2018) encurtam o período de todo o cabaz.')
+               'sessões comuns antes da primeira decisão (aquecimento). Os históricos mais curtos do cabaz são '
+               + ', '.join(f'{t} (desde {data[t].index[0]:%m/%Y})' for t in late) + '.')
 if (pd.Timestamp.today() - oldest).days > 7:
     st.warning('Os dados têm mais de uma semana. Corra o workflow “Atualizar OHLC ETFs”.')
 
@@ -356,14 +379,14 @@ with tab_bt:
 
 # ===================================================================== ROTAÇÃO
 with tab_rot:
-    groups = {'Setores': 'Setor', 'Regiões': 'Região', 'Estilo / dimensão': 'Estilo',
-              'Defensivos': 'Defensivo', 'Só o cabaz': None}
+    groups = {'Carteira UCITS': 'UCITS', 'Setores': 'Setor', 'Regiões': 'Região', 'Estilo / dimensão': 'Estilo',
+              'Temáticos': 'Temático', 'Defensivos': 'Defensivo', 'Só o cabaz': None}
     gsel = st.radio('Universo a analisar', list(groups), horizontal=True)
     if groups[gsel] is None:
         uni = basket
     else:
         uni = [t for t in available if describe(t)[0] == groups[gsel]]
-    rbench = st.selectbox('Comparar contra', [bench] + [t for t in ['SPY', 'URTH', 'ACWI'] if t in available and t != bench],
+    rbench = st.selectbox('Comparar contra', [bench] + [t for t in ['IWDA.AS', 'SPY', 'URTH', 'ACWI'] if t in available and t != bench],
                           format_func=label, key='rbench')
     uni = [t for t in uni if t != rbench] or uni
     missing_g = [t for t, (g, _) in CATALOG.items() if groups[gsel] and g == groups[gsel] and t not in data]
@@ -584,10 +607,32 @@ As regras incluídas usam apenas risco (variância/covariância) ou ordenação 
 covariâncias e momentum são calculados já em EUR. Não simula spread cambial da corretora.
 
 **Pressupostos e limitações**
-- ETF cotados nos EUA como *proxies* de exposições; na UE a compra efetiva é via UCITS (custos, replicação e fiscalidade diferem).
+- Dois universos: ETF cotados nos EUA (*proxies* com histórico longo) e a carteira UCITS em EUR (os instrumentos que compras, histórico mais curto). Os proxies diferem dos UCITS em custos, replicação e fiscalidade.
 - Preços ajustados (dividendos reinvestidos implicitamente), unidades fracionárias, custos {cost:.0f} p.b. sobre o valor negociado,
   sem impostos. Liquidez remunerada a {cash_rate:.2%}/ano.
 - O universo e os parâmetros foram escolhidos hoje, com conhecimento do passado (viés de seleção). Use a grelha de robustez.
 - Calendário = interseção das sessões dos ETF do cabaz{f'; {dropped} sessões sem câmbio foram excluídas' if dropped else ''}.
 - Investigação, não aconselhamento financeiro.
 """)
+
+    st.subheader('Carteira UCITS: correspondência ISIN → cotação usada')
+    src = Path('data/_fontes_ucits.csv')
+    fontes = pd.read_csv(src).set_index('id') if src.exists() else pd.DataFrame()
+    rows = []
+    for u in UCITS:
+        f = fontes.loc[u.id] if u.id in fontes.index else None
+        rows.append({'ID no dashboard': u.id, 'Ticker na folha': u.sheet, 'ISIN': u.isin,
+                     'Fundo (pelo ISIN)': f'{u.name} ({u.policy})', 'Peso folha': (u.weight or 0) * 100,
+                     'Proxy EUA': u.proxy or '—',
+                     'Série de análise': u.series_note or 'a do próprio ISIN',
+                     'Símbolo Yahoo usado': (f['simbolo_usado'] if f is not None and isinstance(f['simbolo_usado'], str)
+                                             and f['simbolo_usado'] else ('—' if u.id not in data else u.id)),
+                     'Desde': (data[u.id].index[0].date() if u.id in data else None),
+                     'Dados': 'OK' if u.id in data else 'em falta'})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width='stretch',
+                 column_config={'Peso folha': PCT('Peso folha', 0),
+                                'Desde': st.column_config.DateColumn(format='DD/MM/YYYY')})
+    st.caption('Todas as linhas usam listagens em EUR (Xetra, Euronext, Milão). O workflow tenta os símbolos '
+               'candidatos por ordem e rejeita séries que o Yahoo indique noutra moeda; a fonte usada fica em '
+               'data/_fontes_ucits.csv. Classes de distribuição: preços ajustados a dividendos pelo Yahoo. '
+               'Históricos UCITS são mais curtos que os proxies EUA, o que encurta o backtest do cabaz.')
